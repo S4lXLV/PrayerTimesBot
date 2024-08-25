@@ -28,7 +28,7 @@ TOKEN = '7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg'
 CHAT_ID = '651307921'
 
 # Set this to True for testing, False for production
-TESTING_MODE = True
+TESTING_MODE = False
 
 def fetch_prayer_times():
     if TESTING_MODE:
