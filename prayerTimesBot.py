@@ -6,6 +6,8 @@ from bs4 import BeautifulSoup
 from datetime import datetime, time, timedelta
 import pytz
 import urllib3
+from aiohttp import web
+import os
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -88,6 +90,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot started. You'll receive updates and notifications for prayer times.")
     await send_daily_update(context)  # Send update immediately for testing
 
+async def handle(request):
+    return web.Response(text="Your bot is running!")
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Web server started on port {port}")
+
 def main():
     application = Application.builder().token(TOKEN).build()
 
@@ -99,6 +114,11 @@ def main():
         application.job_queue.run_daily(send_daily_update, 
                                         time=time(hour=8, minute=0, tzinfo=amman_tz))
 
+    # Start the web server
+    loop = asyncio.get_event_loop()
+    loop.create_task(web_server())
+
+    # Start the bot
     application.run_polling()
 
 if __name__ == '__main__':
