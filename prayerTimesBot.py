@@ -11,6 +11,8 @@ import aiohttp
 import os
 import logging
 from telegram.error import TimedOut, NetworkError, Conflict
+import fcntl
+import sys
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -19,8 +21,6 @@ logger = logging.getLogger(__name__)
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
-
 # Replace with your actual bot token
 TOKEN = '7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg'
 # Replace with your actual chat ID
@@ -28,6 +28,15 @@ CHAT_ID = '651307921'
 
 # Set this to True for testing, False for production
 TESTING_MODE = False
+
+def acquire_lock():
+    lock_file = open("bot_lock_file", "w")
+    try:
+        fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logger.error("Another instance of the bot is already running. Exiting.")
+        sys.exit(1)
+    return lock_file
 
 def fetch_prayer_times():
     if TESTING_MODE:
@@ -69,12 +78,13 @@ def convert_to_12h(time_str):
     time_obj = datetime.strptime(time_str, '%H:%M')
     return time_obj.strftime('%I:%M %p')
 
-
 async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int = 0):
     if minutes_before > 0:
         message = f"Prayer time reminder: {prayer} prayer is in {minutes_before} minutes (at {time_str})"
-    else:
+    elif minutes_before == 0:
         message = f"It's time for {prayer} prayer now ({time_str})"
+    else:
+        return  # Invalid minutes_before value
 
     try:
         await context.bot.send_message(chat_id=CHAT_ID, text=message)
@@ -88,15 +98,15 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
         prayer_time = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %I:%M %p")
         prayer_time = pytz.timezone('Asia/Amman').localize(prayer_time)
         
+        # Schedule notifications at 20, 10, 5 minutes before, and at prayer time
         for minutes in [20, 10, 5, 0]:
             notify_time = prayer_time - timedelta(minutes=minutes)
             if notify_time > now:
                 context.job_queue.run_once(
-                    send_notification,
-                    notify_time,
-                    data={'prayer': prayer, 'time_str': time_str, 'minutes_before': minutes}
+                    lambda ctx: send_notification(ctx, prayer, time_str, minutes),
+                    notify_time - now
                 )
-                logger.info(f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)")
+                logger.info(f"Scheduled {prayer} notification for {notify_time}")
 
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     prayer_times = fetch_prayer_times()
@@ -119,7 +129,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle(request):
     return web.Response(text="Your bot is running!")
 
-
 async def keep_alive():
     while True:
         try:
@@ -130,12 +139,13 @@ async def keep_alive():
                 continue
 
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://{hostname}") as response:
+                async with session.get(f"https://{hostname}", timeout=30) as response:
                     logger.info(f"Keep-alive request sent. Status: {response.status}")
+        except asyncio.TimeoutError:
+            logger.warning("Keep-alive request timed out. Will retry.")
         except Exception as e:
             logger.error(f"Error in keep-alive request: {str(e)}")
         await asyncio.sleep(540)  # 9 minutes
-
 
 async def web_server():
     app = web.Application()
@@ -151,33 +161,39 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"Exception while handling an update: {context.error}")
 
     if isinstance(context.error, Conflict):
-        # Handle the conflict error
         logger.warning("Conflict detected. Waiting before retrying...")
-        await asyncio.sleep(30)  # Wait for 30 seconds before retrying
+        await asyncio.sleep(60)  # Wait for 60 seconds before retrying
     elif isinstance(context.error, (TimedOut, NetworkError)):
-        # Handle timeout errors
-        logger.warning(f"Network error: {context.error}. Retrying in 10 seconds...")
-        await asyncio.sleep(10)  # Wait for 10 seconds before retrying
+        logger.warning(f"Network error: {context.error}. Retrying in 30 seconds...")
+        await asyncio.sleep(30)  # Wait for 30 seconds before retrying
 
 def main():
+    lock_file = acquire_lock()
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_error_handler(error_handler)
 
-    # Schedule daily update at 12:05 AM
-    amman_tz = pytz.timezone('Asia/Amman')
-    application.job_queue.run_daily(send_daily_update, 
-                                    time=time(hour=0, minute=5, tzinfo=amman_tz))
+    if not TESTING_MODE:
+        # Schedule daily update at 8 AM (only in production mode)
+        amman_tz = pytz.timezone('Asia/Amman')
+        application.job_queue.run_daily(send_daily_update, 
+                                        time=time(hour=8, minute=0, tzinfo=amman_tz))
 
     # Start the web server and keep-alive mechanism
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     loop.create_task(web_server())
     loop.create_task(keep_alive())
 
-    # Start the bot with a higher timeout
-    application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+    try:
+        # Start the bot with a higher timeout
+        application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+    finally:
+        fcntl.lockf(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
 
 if __name__ == '__main__':
     main()
