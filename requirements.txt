@@ -1,0 +1,6 @@
+schedule
+python-telegram-bot[job-queue]
+aiohttp
+requests
+beautifulsoup4
+pytz
