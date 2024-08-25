@@ -73,10 +73,8 @@ def convert_to_12h(time_str):
 async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int = 0):
     if minutes_before > 0:
         message = f"Prayer time reminder: {prayer} prayer is in {minutes_before} minutes (at {time_str})"
-    elif minutes_before == 0:
-        message = f"It's time for {prayer} prayer now ({time_str})"
     else:
-        return  # Invalid minutes_before value
+        message = f"It's time for {prayer} prayer now ({time_str})"
 
     try:
         await context.bot.send_message(chat_id=CHAT_ID, text=message)
@@ -90,15 +88,15 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
         prayer_time = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %I:%M %p")
         prayer_time = pytz.timezone('Asia/Amman').localize(prayer_time)
         
-        # Schedule notifications at 20, 10, 5 minutes before, and at prayer time
         for minutes in [20, 10, 5, 0]:
             notify_time = prayer_time - timedelta(minutes=minutes)
             if notify_time > now:
                 context.job_queue.run_once(
-                    lambda ctx: send_notification(ctx, prayer, time_str, minutes),
-                    notify_time - now
+                    send_notification,
+                    notify_time,
+                    data={'prayer': prayer, 'time_str': time_str, 'minutes_before': minutes}
                 )
-                logger.info(f"Scheduled {prayer} notification for {notify_time}")
+                logger.info(f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)")
 
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     prayer_times = fetch_prayer_times()
@@ -167,11 +165,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_error_handler(error_handler)
 
-    if not TESTING_MODE:
-        # Schedule daily update at 8 AM (only in production mode)
-        amman_tz = pytz.timezone('Asia/Amman')
-        application.job_queue.run_daily(send_daily_update, 
-                                        time=time(hour=8, minute=0, tzinfo=amman_tz))
+    # Schedule daily update at 12:05 AM
+    amman_tz = pytz.timezone('Asia/Amman')
+    application.job_queue.run_daily(send_daily_update, 
+                                    time=time(hour=0, minute=5, tzinfo=amman_tz))
 
     # Start the web server and keep-alive mechanism
     loop = asyncio.new_event_loop()
