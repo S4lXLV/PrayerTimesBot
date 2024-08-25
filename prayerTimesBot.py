@@ -27,14 +27,14 @@ TOKEN = '7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg'
 CHAT_ID = '651307921'
 
 # Set this to True for testing, False for production
-TESTING_MODE = True
+TESTING_MODE = False
 
 def fetch_prayer_times():
     if TESTING_MODE:
         # Generate fake prayer times for testing
         now = datetime.now(pytz.timezone('Asia/Amman'))
         fake_times = {
-            'Fajr': (now + timedelta(minutes=20)).strftime('%I:%M %p'),
+            'Fajr': (now + timedelta(minutes=2)).strftime('%I:%M %p'),
             'Sunrise': (now + timedelta(minutes=4)).strftime('%I:%M %p'),
             'Dhuhr': (now + timedelta(minutes=6)).strftime('%I:%M %p'),
             'Asr': (now + timedelta(minutes=8)).strftime('%I:%M %p'),
