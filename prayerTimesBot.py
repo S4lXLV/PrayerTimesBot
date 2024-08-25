@@ -27,14 +27,14 @@ TOKEN = '7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg'
 CHAT_ID = '651307921'
 
 # Set this to True for testing, False for production
-TESTING_MODE = False
+TESTING_MODE = True
 
 def fetch_prayer_times():
     if TESTING_MODE:
         # Generate fake prayer times for testing
         now = datetime.now(pytz.timezone('Asia/Amman'))
         fake_times = {
-            'Fajr': (now + timedelta(minutes=2)).strftime('%I:%M %p'),
+            'Fajr': (now + timedelta(minutes=20)).strftime('%I:%M %p'),
             'Sunrise': (now + timedelta(minutes=4)).strftime('%I:%M %p'),
             'Dhuhr': (now + timedelta(minutes=6)).strftime('%I:%M %p'),
             'Asr': (now + timedelta(minutes=8)).strftime('%I:%M %p'),
@@ -125,8 +125,14 @@ async def handle(request):
 async def keep_alive():
     while True:
         try:
+            hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+            if not hostname:
+                logger.warning("RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request.")
+                await asyncio.sleep(540)
+                continue
+
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}") as response:
+                async with session.get(f"https://{hostname}") as response:
                     logger.info(f"Keep-alive request sent. Status: {response.status}")
         except Exception as e:
             logger.error(f"Error in keep-alive request: {str(e)}")
@@ -168,7 +174,8 @@ def main():
                                         time=time(hour=8, minute=0, tzinfo=amman_tz))
 
     # Start the web server and keep-alive mechanism
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.create_task(web_server())
     loop.create_task(keep_alive())
 
