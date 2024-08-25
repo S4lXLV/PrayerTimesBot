@@ -8,6 +8,12 @@ import pytz
 import urllib3
 from aiohttp import web
 import os
+import logging
+from telegram.error import TimedOut, NetworkError, Conflict
+
+# Set up logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -88,7 +94,10 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot started. You'll receive updates and notifications for prayer times.")
-    await send_daily_update(context)  # Send update immediately for testing
+    try:
+        await send_daily_update(context)  # Send update immediately for testing
+    except Exception as e:
+        logger.error(f"Error in start command: {str(e)}")
 
 async def handle(request):
     return web.Response(text="Your bot is running!")
@@ -101,12 +110,25 @@ async def web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"Web server started on port {port}")
+    logger.info(f"Web server started on port {port}")
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Exception while handling an update: {context.error}")
+
+    if isinstance(context.error, Conflict):
+        # Handle the conflict error
+        logger.warning("Conflict detected. Waiting before retrying...")
+        await asyncio.sleep(30)  # Wait for 30 seconds before retrying
+    elif isinstance(context.error, (TimedOut, NetworkError)):
+        # Handle timeout errors
+        logger.warning(f"Network error: {context.error}. Retrying in 10 seconds...")
+        await asyncio.sleep(10)  # Wait for 10 seconds before retrying
 
 def main():
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_error_handler(error_handler)
 
     if not TESTING_MODE:
         # Schedule daily update at 8 AM (only in production mode)
@@ -118,8 +140,8 @@ def main():
     loop = asyncio.get_event_loop()
     loop.create_task(web_server())
 
-    # Start the bot
-    application.run_polling()
+    # Start the bot with a higher timeout
+    application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
