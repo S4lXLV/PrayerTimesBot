@@ -68,6 +68,37 @@ def convert_to_12h(time_str):
     time_obj = datetime.strptime(time_str, '%H:%M')
     return time_obj.strftime('%I:%M %p')
 
+
+async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int = 0):
+    if minutes_before > 0:
+        message = f"Prayer time reminder: {prayer} prayer is in {minutes_before} minutes (at {time_str})"
+    elif minutes_before == 0:
+        message = f"It's time for {prayer} prayer now ({time_str})"
+    else:
+        return  # Invalid minutes_before value
+
+    try:
+        await context.bot.send_message(chat_id=CHAT_ID, text=message)
+        logger.info(f"Sent notification: {message}")
+    except Exception as e:
+        logger.error(f"Failed to send notification: {str(e)}")
+
+async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_times):
+    now = datetime.now(pytz.timezone('Asia/Amman'))
+    for prayer, time_str in prayer_times.items():
+        prayer_time = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %I:%M %p")
+        prayer_time = pytz.timezone('Asia/Amman').localize(prayer_time)
+        
+        # Schedule notifications at 20, 10, 5 minutes before, and at prayer time
+        for minutes in [20, 10, 5, 0]:
+            notify_time = prayer_time - timedelta(minutes=minutes)
+            if notify_time > now:
+                context.job_queue.run_once(
+                    lambda ctx: send_notification(ctx, prayer, time_str, minutes),
+                    notify_time - now
+                )
+                logger.info(f"Scheduled {prayer} notification for {notify_time}")
+
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     prayer_times = fetch_prayer_times()
     if prayer_times:
@@ -76,21 +107,8 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
             message += f"{prayer}: {time}\n"
         await context.bot.send_message(chat_id=CHAT_ID, text=message)
         await schedule_notifications(context, prayer_times)
-
-async def send_notification(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    await context.bot.send_message(chat_id=CHAT_ID, text=job.data)
-
-async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_times):
-    now = datetime.now(pytz.timezone('Asia/Amman'))
-    for prayer, time_str in prayer_times.items():
-        prayer_time = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %I:%M %p")
-        prayer_time = pytz.timezone('Asia/Amman').localize(prayer_time)
-        notify_time = prayer_time - timedelta(minutes=1)  # Reduced to 1 minute for testing
-        
-        if notify_time > now:
-            message = f"Prayer time reminder: {prayer} prayer is in 1 minute (at {time_str})"
-            context.job_queue.run_once(send_notification, notify_time - now, data=message)
+    else:
+        logger.error("Failed to fetch prayer times")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot started. You'll receive updates and notifications for prayer times.")
@@ -101,6 +119,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle(request):
     return web.Response(text="Your bot is running!")
+
+
+async def keep_alive():
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}") as response:
+                    logger.info(f"Keep-alive request sent. Status: {response.status}")
+        except Exception as e:
+            logger.error(f"Error in keep-alive request: {str(e)}")
+        await asyncio.sleep(540)  # 9 minutes
+
 
 async def web_server():
     app = web.Application()
@@ -136,9 +166,10 @@ def main():
         application.job_queue.run_daily(send_daily_update, 
                                         time=time(hour=8, minute=0, tzinfo=amman_tz))
 
-    # Start the web server
+    # Start the web server and keep-alive mechanism
     loop = asyncio.get_event_loop()
     loop.create_task(web_server())
+    loop.create_task(keep_alive())
 
     # Start the bot with a higher timeout
     application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
