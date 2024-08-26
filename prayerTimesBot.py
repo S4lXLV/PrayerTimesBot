@@ -56,19 +56,31 @@ def fetch_prayer_times():
             columns = row.find_all('td')
             date = columns[0].text.strip()
             if date == today:
-                return {
-                    'Fajr': convert_to_12h(columns[1].text.strip()),
-                    'Sunrise': convert_to_12h(columns[2].text.strip()),
-                    'Dhuhr': convert_to_12h(columns[3].text.strip()),
-                    'Asr': convert_to_12h(columns[4].text.strip()),
-                    'Maghrib': convert_to_12h(columns[5].text.strip()),
-                    'Isha': convert_to_12h(columns[6].text.strip())
+                times = {
+                    'Fajr': columns[1].text.strip(),
+                    'Sunrise': columns[2].text.strip(),
+                    'Dhuhr': columns[3].text.strip(),
+                    'Asr': columns[4].text.strip(),
+                    'Maghrib': columns[5].text.strip(),
+                    'Isha': columns[6].text.strip()
                 }
+                
+                # Add AM/PM to the times
+                for prayer, time_str in times.items():
+                    hour, minute = map(int, time_str.split(':'))
+                    if prayer in ['Fajr', 'Sunrise']:
+                        times[prayer] = f"{time_str} AM"
+                    elif prayer == 'Dhuhr' and hour != 12:
+                        times[prayer] = f"{time_str} PM"
+                    elif hour < 12:
+                        times[prayer] = f"{time_str} PM"
+                    else:
+                        times[prayer] = f"{time_str} PM"
+                
+                return times
         return None
 
-def convert_to_12h(time_str):
-    time_obj = datetime.strptime(time_str, '%H:%M')
-    return time_obj.strftime('%I:%M %p')
+
 
 
 
