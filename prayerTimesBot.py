@@ -12,7 +12,6 @@ import os
 import logging
 from telegram.error import TimedOut, NetworkError, Conflict
 
-
 # Set up logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -97,9 +96,18 @@ async def send_notification(
         logger.error(f"Failed to send notification: {str(e)}")
 
 
+# Add this new function to remove existing prayer notification jobs
+def remove_existing_jobs(job_queue):
+    current_jobs = job_queue.jobs()
+    for job in current_jobs:
+        if job.name and job.name.startswith('prayer_notification_'):
+            job.schedule_removal()
+    logger.info("Removed existing prayer notification jobs")
+
+
 async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_times):
-    # Clear existing jobs to prevent duplicates
-    context.job_queue.clear()
+    # Remove existing prayer notification jobs
+    remove_existing_jobs(context.job_queue)
 
     now = datetime.now(pytz.timezone("Asia/Amman"))
     for prayer, time_str in prayer_times.items():
@@ -118,6 +126,7 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
                     time_str=time_str,
                     mins=minutes: send_notification(ctx, prayer, time_str, mins),
                     when=notify_time,
+                    name=f'prayer_notification_{prayer}_{minutes}'  # Add a name to the job
                 )
                 logger.info(
                     f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)"
@@ -134,7 +143,6 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
         await schedule_notifications(context, prayer_times)
     else:
         logger.error("Failed to fetch prayer times")
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -200,10 +208,11 @@ def main():
     application.add_error_handler(error_handler)
 
     amman_tz = pytz.timezone("Asia/Amman")
-
+    
     # Schedule daily update at midnight
     application.job_queue.run_daily(
-        send_daily_update, time=time(hour=0, minute=0, tzinfo=amman_tz)
+        send_daily_update, time=time(hour=0, minute=0, tzinfo=amman_tz),
+        name='daily_update'  # Add a name to the job
     )
 
     # Start the web server and keep-alive mechanism
@@ -214,7 +223,6 @@ def main():
 
     # Start the bot with a higher timeout
     application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
