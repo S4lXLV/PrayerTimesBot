@@ -12,79 +12,79 @@ import os
 import logging
 from telegram.error import TimedOut, NetworkError, Conflict
 
-# Set up logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
 
+# Set up logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
-
 # Replace with your actual bot token
-TOKEN = '7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg'
+TOKEN = "7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg"
 # Replace with your actual chat ID
-CHAT_ID = '651307921'
+CHAT_ID = "651307921"
 
 # Set this to True for testing, False for production
 TESTING_MODE = False
 
+
 def fetch_prayer_times():
     if TESTING_MODE:
         # Generate fake prayer times for testing
-        now = datetime.now(pytz.timezone('Asia/Amman'))
+        now = datetime.now(pytz.timezone("Asia/Amman"))
         fake_times = {
-            'Fajr': (now + timedelta(minutes=25)).strftime('%I:%M %p'),
-            'Sunrise': (now + timedelta(minutes=35)).strftime('%I:%M %p'),
-            'Dhuhr': (now + timedelta(minutes=45)).strftime('%I:%M %p'),
-            'Asr': (now + timedelta(minutes=55)).strftime('%I:%M %p'),
-            'Maghrib': (now + timedelta(minutes=65)).strftime('%I:%M %p'),
-            'Isha': (now + timedelta(minutes=75)).strftime('%I:%M %p')
+            "Fajr": (now + timedelta(minutes=25)).strftime("%I:%M %p"),
+            "Sunrise": (now + timedelta(minutes=35)).strftime("%I:%M %p"),
+            "Dhuhr": (now + timedelta(minutes=45)).strftime("%I:%M %p"),
+            "Asr": (now + timedelta(minutes=55)).strftime("%I:%M %p"),
+            "Maghrib": (now + timedelta(minutes=65)).strftime("%I:%M %p"),
+            "Isha": (now + timedelta(minutes=75)).strftime("%I:%M %p"),
         }
         return fake_times
     else:
-        url = 'https://www.awqaf.gov.jo/ar/Pages/PrayerTime'
+        url = "https://www.awqaf.gov.jo/ar/Pages/PrayerTime"
         response = requests.get(url, verify=False)  # Disable SSL verification
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        table = soup.find('table', {'id': 'MainContent_gvWebparts'})
-        rows = table.find_all('tr')[1:]  # Skip the header row
-        
-        today = datetime.now().strftime('%d/%m/%Y')
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        table = soup.find("table", {"id": "MainContent_gvWebparts"})
+        rows = table.find_all("tr")[1:]  # Skip the header row
+
+        today = datetime.now().strftime("%d/%m/%Y")
         for row in rows:
-            columns = row.find_all('td')
+            columns = row.find_all("td")
             date = columns[0].text.strip()
             if date == today:
                 times = {
-                    'Fajr': columns[1].text.strip(),
-                    'Sunrise': columns[2].text.strip(),
-                    'Dhuhr': columns[3].text.strip(),
-                    'Asr': columns[4].text.strip(),
-                    'Maghrib': columns[5].text.strip(),
-                    'Isha': columns[6].text.strip()
+                    "Fajr": columns[1].text.strip(),
+                    "Sunrise": columns[2].text.strip(),
+                    "Dhuhr": columns[3].text.strip(),
+                    "Asr": columns[4].text.strip(),
+                    "Maghrib": columns[5].text.strip(),
+                    "Isha": columns[6].text.strip(),
                 }
-                
+
                 # Add AM/PM to the times
                 for prayer, time_str in times.items():
-                    hour, minute = map(int, time_str.split(':'))
-                    if prayer in ['Fajr', 'Sunrise']:
+                    hour, minute = map(int, time_str.split(":"))
+                    if prayer in ["Fajr", "Sunrise"]:
                         times[prayer] = f"{time_str} AM"
-                    elif prayer == 'Dhuhr' and hour != 12:
+                    elif prayer == "Dhuhr" and hour != 12:
                         times[prayer] = f"{time_str} PM"
                     elif hour < 12:
                         times[prayer] = f"{time_str} PM"
                     else:
                         times[prayer] = f"{time_str} PM"
-                
+
                 return times
         return None
 
 
-
-
-
-async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int):
+async def send_notification(
+    context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int
+):
     if minutes_before > 0:
         message = f"Prayer time reminder: {prayer} prayer is in {minutes_before} minutes (at {time_str})"
     else:
@@ -96,21 +96,33 @@ async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, tim
     except Exception as e:
         logger.error(f"Failed to send notification: {str(e)}")
 
+
 async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_times):
-    now = datetime.now(pytz.timezone('Asia/Amman'))
+    # Clear existing jobs to prevent duplicates
+    context.job_queue.clear()
+
+    now = datetime.now(pytz.timezone("Asia/Amman"))
     for prayer, time_str in prayer_times.items():
-        prayer_time = datetime.strptime(f"{now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %I:%M %p")
-        prayer_time = pytz.timezone('Asia/Amman').localize(prayer_time)
-        
+        prayer_time = datetime.strptime(
+            f"{now.strftime('%Y-%m-%d')} {time_str}", "%Y-%m-%d %I:%M %p"
+        )
+        prayer_time = pytz.timezone("Asia/Amman").localize(prayer_time)
+
         # Schedule notifications at 20, 10, 5 minutes before, and at prayer time
         for minutes in [20, 10, 5, 0]:
             notify_time = prayer_time - timedelta(minutes=minutes)
             if notify_time > now:
                 context.job_queue.run_once(
-                    lambda ctx, prayer=prayer, time_str=time_str, mins=minutes: send_notification(ctx, prayer, time_str, mins),
-                    when=notify_time
+                    lambda ctx,
+                    prayer=prayer,
+                    time_str=time_str,
+                    mins=minutes: send_notification(ctx, prayer, time_str, mins),
+                    when=notify_time,
                 )
-                logger.info(f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)")
+                logger.info(
+                    f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)"
+                )
+
 
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     prayer_times = fetch_prayer_times()
@@ -125,7 +137,9 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot started. You'll receive updates and notifications for prayer times.")
+    await update.message.reply_text(
+        "Bot started. You'll receive updates and notifications for prayer times."
+    )
     try:
         await send_daily_update(context)  # Send update immediately for testing
     except Exception as e:
@@ -139,9 +153,11 @@ async def handle(request):
 async def keep_alive():
     while True:
         try:
-            hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+            hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
             if not hostname:
-                logger.warning("RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request.")
+                logger.warning(
+                    "RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request."
+                )
                 await asyncio.sleep(540)
                 continue
 
@@ -163,6 +179,7 @@ async def web_server():
     await site.start()
     logger.info(f"Web server started on port {port}")
 
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}")
 
@@ -175,21 +192,19 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.warning(f"Network error: {context.error}. Retrying in 10 seconds...")
         await asyncio.sleep(10)  # Wait for 10 seconds before retrying
 
+
 def main():
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_error_handler(error_handler)
 
-    if not TESTING_MODE:
-        # Schedule daily update at 8 AM (only in production mode)
-        amman_tz = pytz.timezone('Asia/Amman')
-        application.job_queue.run_daily(send_daily_update, 
-                                        time=time(hour=8, minute=0, tzinfo=amman_tz))
-    else:
-        # For testing, we'll manually trigger the daily update using the /start command
-        # Remove the repeating job to prevent multiple updates
-        pass
+    amman_tz = pytz.timezone("Asia/Amman")
+
+    # Schedule daily update at midnight
+    application.job_queue.run_daily(
+        send_daily_update, time=time(hour=0, minute=0, tzinfo=amman_tz)
+    )
 
     # Start the web server and keep-alive mechanism
     loop = asyncio.new_event_loop()
@@ -200,5 +215,6 @@ def main():
     # Start the bot with a higher timeout
     application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
