@@ -12,6 +12,7 @@ import os
 import logging
 from telegram.error import TimedOut, NetworkError, Conflict
 
+
 # Set up logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -29,8 +30,11 @@ CHAT_ID = "651307921"
 # Set this to True for testing, False for production
 TESTING_MODE = False
 
+MAX_RETRIES = 5
+RETRY_DELAY = 300  # 5 minutes
 
-def fetch_prayer_times():
+
+async def fetch_prayer_times(retries=0):
     if TESTING_MODE:
         # Generate fake prayer times for testing
         now = datetime.now(pytz.timezone("Asia/Amman"))
@@ -44,41 +48,56 @@ def fetch_prayer_times():
         }
         return fake_times
     else:
-        url = "https://www.awqaf.gov.jo/ar/Pages/PrayerTime"
-        response = requests.get(url, verify=False)  # Disable SSL verification
-        soup = BeautifulSoup(response.content, "html.parser")
+        try:
+            url = "https://www.awqaf.gov.jo/ar/Pages/PrayerTime"
+            response = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: requests.get(url, verify=False, timeout=10)
+            )
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, "html.parser")
 
-        table = soup.find("table", {"id": "MainContent_gvWebparts"})
-        rows = table.find_all("tr")[1:]  # Skip the header row
+            table = soup.find("table", {"id": "MainContent_gvWebparts"})
+            rows = table.find_all("tr")[1:]  # Skip the header row
 
-        today = datetime.now().strftime("%d/%m/%Y")
-        for row in rows:
-            columns = row.find_all("td")
-            date = columns[0].text.strip()
-            if date == today:
-                times = {
-                    "Fajr": columns[1].text.strip(),
-                    "Sunrise": columns[2].text.strip(),
-                    "Dhuhr": columns[3].text.strip(),
-                    "Asr": columns[4].text.strip(),
-                    "Maghrib": columns[5].text.strip(),
-                    "Isha": columns[6].text.strip(),
-                }
+            today = datetime.now().strftime("%d/%m/%Y")
+            for row in rows:
+                columns = row.find_all("td")
+                date = columns[0].text.strip()
+                if date == today:
+                    times = {
+                        "Fajr": columns[1].text.strip(),
+                        "Sunrise": columns[2].text.strip(),
+                        "Dhuhr": columns[3].text.strip(),
+                        "Asr": columns[4].text.strip(),
+                        "Maghrib": columns[5].text.strip(),
+                        "Isha": columns[6].text.strip(),
+                    }
 
-                # Add AM/PM to the times
-                for prayer, time_str in times.items():
-                    hour, minute = map(int, time_str.split(":"))
-                    if prayer in ["Fajr", "Sunrise"]:
-                        times[prayer] = f"{time_str} AM"
-                    elif prayer == "Dhuhr" and hour != 12:
-                        times[prayer] = f"{time_str} PM"
-                    elif hour < 12:
-                        times[prayer] = f"{time_str} PM"
-                    else:
-                        times[prayer] = f"{time_str} PM"
+                    # Add AM/PM to the times
+                    for prayer, time_str in times.items():
+                        hour, minute = map(int, time_str.split(":"))
+                        if prayer in ["Fajr", "Sunrise"]:
+                            times[prayer] = f"{time_str} AM"
+                        elif prayer == "Dhuhr" and hour != 12:
+                            times[prayer] = f"{time_str} PM"
+                        elif hour < 12:
+                            times[prayer] = f"{time_str} PM"
+                        else:
+                            times[prayer] = f"{time_str} PM"
 
-                return times
-        return None
+                    return times
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching prayer times: {str(e)}")
+            if retries < MAX_RETRIES:
+                logger.info(
+                    f"Retrying in {RETRY_DELAY} seconds... (Attempt {retries + 1}/{MAX_RETRIES})"
+                )
+                await asyncio.sleep(RETRY_DELAY)
+                return await fetch_prayer_times(retries + 1)
+            else:
+                logger.error("Max retries reached. Unable to fetch prayer times.")
+                return None
 
 
 async def send_notification(
@@ -100,7 +119,7 @@ async def send_notification(
 def remove_existing_jobs(job_queue):
     current_jobs = job_queue.jobs()
     for job in current_jobs:
-        if job.name and job.name.startswith('prayer_notification_'):
+        if job.name and job.name.startswith("prayer_notification_"):
             job.schedule_removal()
     logger.info("Removed existing prayer notification jobs")
 
@@ -126,7 +145,7 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
                     time_str=time_str,
                     mins=minutes: send_notification(ctx, prayer, time_str, mins),
                     when=notify_time,
-                    name=f'prayer_notification_{prayer}_{minutes}'  # Add a name to the job
+                    name=f"prayer_notification_{prayer}_{minutes}",  # Add a name to the job
                 )
                 logger.info(
                     f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)"
@@ -134,7 +153,7 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
 
 
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
-    prayer_times = fetch_prayer_times()
+    prayer_times = await fetch_prayer_times()
     if prayer_times:
         message = "Prayer times for today:\n"
         for prayer, time in prayer_times.items():
@@ -143,6 +162,7 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
         await schedule_notifications(context, prayer_times)
     else:
         logger.error("Failed to fetch prayer times")
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -201,18 +221,65 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         await asyncio.sleep(10)  # Wait for 10 seconds before retrying
 
 
+async def get_next_prayer(prayer_times):
+    now = datetime.now(pytz.timezone("Asia/Amman"))
+    today = now.date()
+    prayer_datetimes = {}
+
+    for prayer, time_str in prayer_times.items():
+        prayer_time = datetime.strptime(f"{today} {time_str}", "%Y-%m-%d %I:%M %p")
+        prayer_time = pytz.timezone("Asia/Amman").localize(prayer_time)
+        prayer_datetimes[prayer] = prayer_time
+
+    next_prayer = None
+    for prayer, prayer_time in prayer_datetimes.items():
+        if prayer_time > now:
+            next_prayer = (prayer, prayer_time)
+            break
+
+    if next_prayer is None:
+        # If no next prayer found today, get the first prayer of tomorrow
+        tomorrow = today + timedelta(days=1)
+        next_prayer = (
+            "Fajr",
+            pytz.timezone("Asia/Amman").localize(datetime.combine(tomorrow, time.min)),
+        )
+
+    return next_prayer
+
+
+async def remaining_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prayer_times = await fetch_prayer_times()
+    if prayer_times:
+        next_prayer, next_prayer_time = await get_next_prayer(prayer_times)
+        now = datetime.now(pytz.timezone("Asia/Amman"))
+        time_remaining = next_prayer_time - now
+
+        hours, remainder = divmod(time_remaining.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+
+        message = f"Time remaining until {next_prayer}: {hours:02d}:{minutes:02d}"
+        await update.message.reply_text(message)
+    else:
+        await update.message.reply_text(
+            "Sorry, I couldn't fetch the prayer times. Please try again later."
+        )
+
+
 def main():
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("remaining", remaining_time))
     application.add_error_handler(error_handler)
 
     amman_tz = pytz.timezone("Asia/Amman")
-    
-    # Schedule daily update at midnight
+
+    # Schedule daily update at 4 AM
     application.job_queue.run_daily(
-        send_daily_update, time=time(hour=0, minute=0, tzinfo=amman_tz),
-        name='daily_update'  # Add a name to the job
+        send_daily_update,
+        time=time(hour=4, minute=0, tzinfo=amman_tz),
+        name="daily_update",
     )
 
     # Start the web server and keep-alive mechanism
@@ -223,6 +290,7 @@ def main():
 
     # Start the bot with a higher timeout
     application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
