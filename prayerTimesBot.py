@@ -39,8 +39,9 @@ PRAYER_EMOJIS = {
     "Dhuhr": "🕑",
     "Asr": "🕓",
     "Maghrib": "🌇",
-    "Isha": "🌙"
+    "Isha": "🌙",
 }
+
 
 async def fetch_prayer_times(retries=0):
     if TESTING_MODE:
@@ -107,7 +108,10 @@ async def fetch_prayer_times(retries=0):
                 logger.error("Max retries reached. Unable to fetch prayer times.")
                 return None
 
-async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int):
+
+async def send_notification(
+    context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int
+):
     if prayer == "Sunrise":
         if minutes_before > 0:
             message = f"☀️ Sunrise reminder: The sun will rise in {minutes_before} minutes (at {time_str})"
@@ -119,16 +123,25 @@ async def send_notification(context: ContextTypes.DEFAULT_TYPE, prayer: str, tim
         else:
             message = f"{PRAYER_EMOJIS[prayer]} It's time for {prayer} prayer now ({time_str})"
 
-    keyboard = [
-        [InlineKeyboardButton("Mark as prayed ✅", callback_data=f"prayed_{prayer}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = None
+    if minutes_before == 0 and prayer != "Sunrise":
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "Mark as prayed ✅", callback_data=f"prayed_{prayer}"
+                )
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        await context.bot.send_message(chat_id=CHAT_ID, text=message, reply_markup=reply_markup)
+        await context.bot.send_message(
+            chat_id=CHAT_ID, text=message, reply_markup=reply_markup
+        )
         logger.info(f"Sent notification: {message}")
     except Exception as e:
         logger.error(f"Failed to send notification: {str(e)}")
+
 
 def remove_existing_jobs(job_queue):
     current_jobs = job_queue.jobs()
@@ -136,6 +149,7 @@ def remove_existing_jobs(job_queue):
         if job.name and job.name.startswith("prayer_notification_"):
             job.schedule_removal()
     logger.info("Removed existing prayer notification jobs")
+
 
 async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_times):
     remove_existing_jobs(context.job_queue)
@@ -163,6 +177,7 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
                     f"Scheduled {prayer} notification for {notify_time} ({minutes} minutes before)"
                 )
 
+
 async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     prayer_times = await fetch_prayer_times()
     if prayer_times:
@@ -175,6 +190,7 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.error("Failed to fetch prayer times")
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = (
         "🕌 Welcome to the Prayer Times Bot! 🕌\n\n"
@@ -185,8 +201,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_message)
     await send_daily_update(context)  # Send update immediately for testing
 
+
 async def handle(request):
     return web.Response(text="Your bot is running!")
+
 
 async def keep_alive():
     while True:
@@ -206,6 +224,7 @@ async def keep_alive():
             logger.error(f"Error in keep-alive request: {str(e)}")
         await asyncio.sleep(540)  # 9 minutes
 
+
 async def web_server():
     app = web.Application()
     app.router.add_get("/", handle)
@@ -216,6 +235,7 @@ async def web_server():
     await site.start()
     logger.info(f"Web server started on port {port}")
 
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}")
 
@@ -225,6 +245,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     elif isinstance(context.error, (TimedOut, NetworkError)):
         logger.warning(f"Network error: {context.error}. Retrying in 10 seconds...")
         await asyncio.sleep(10)  # Wait for 10 seconds before retrying
+
 
 async def get_next_prayer(prayer_times):
     now = datetime.now(pytz.timezone("Asia/Amman"))
@@ -252,6 +273,7 @@ async def get_next_prayer(prayer_times):
 
     return next_prayer
 
+
 async def remaining_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prayer_times = await fetch_prayer_times()
     if prayer_times:
@@ -263,10 +285,15 @@ async def remaining_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         minutes, _ = divmod(remainder, 60)
 
         emoji = PRAYER_EMOJIS.get(next_prayer, "🕰")
-        message = f"{emoji} Time remaining until {next_prayer}:\n\n{hours:02d}:{minutes:02d}"
+        message = (
+            f"{emoji} Time remaining until {next_prayer}:\n\n{hours:02d}:{minutes:02d}"
+        )
         await update.message.reply_text(message)
     else:
-        await update.message.reply_text("Sorry, I couldn't fetch the prayer times. Please try again later.")
+        await update.message.reply_text(
+            "Sorry, I couldn't fetch the prayer times. Please try again later."
+        )
+
 
 async def today_prayer_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prayer_times = await fetch_prayer_times()
@@ -277,14 +304,20 @@ async def today_prayer_times(update: Update, context: ContextTypes.DEFAULT_TYPE)
             message += f"{emoji} {prayer}: {time}\n"
         await update.message.reply_text(message)
     else:
-        await update.message.reply_text("Sorry, I couldn't fetch the prayer times. Please try again later.")
+        await update.message.reply_text(
+            "Sorry, I couldn't fetch the prayer times. Please try again later."
+        )
+
 
 async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    prayer = query.data.split('_')[1]
-    await query.edit_message_text(f"✅ {prayer} prayer marked as completed. May Allah accept your prayers!")
+    prayer = query.data.split("_")[1]
+    await query.edit_message_text(
+        f"✅ {prayer} prayer marked as completed. May Allah accept your prayers!"
+    )
+
 
 def main():
     application = Application.builder().token(TOKEN).build()
@@ -292,7 +325,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("remaining", remaining_time))
     application.add_handler(CommandHandler("today", today_prayer_times))
-    application.add_handler(CallbackQueryHandler(prayer_callback, pattern='^prayed_'))
+    application.add_handler(CallbackQueryHandler(prayer_callback, pattern="^prayed_"))
     application.add_error_handler(error_handler)
 
     amman_tz = pytz.timezone("Asia/Amman")
@@ -312,6 +345,7 @@ def main():
 
     # Start the bot with a higher timeout
     application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
