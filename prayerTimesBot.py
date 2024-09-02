@@ -43,6 +43,34 @@ PRAYER_EMOJIS = {
 }
 
 
+# Add this new function to delete previous reminders
+async def delete_previous_reminders(context: ContextTypes.DEFAULT_TYPE, prayer: str):
+    chat_id = CHAT_ID
+    now = datetime.now(pytz.timezone("Asia/Amman"))
+    two_hours_ago = now - timedelta(hours=2)
+
+    async def delete_message(message_id):
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.error(f"Failed to delete message {message_id}: {str(e)}")
+
+    try:
+        async with context.application.bot._request.get_session() as session:
+            updates = await context.application.bot.get_updates(offset=-1, limit=100)
+            delete_tasks = []
+            for update in updates:
+                if update.message and update.message.date > two_hours_ago:
+                    if (
+                        update.message.text
+                        and f"{prayer} prayer is in" in update.message.text
+                    ):
+                        delete_tasks.append(delete_message(update.message.message_id))
+            await asyncio.gather(*delete_tasks)
+    except Exception as e:
+        logger.error(f"Error while deleting previous reminders: {str(e)}")
+
+
 async def fetch_prayer_times(retries=0):
     if TESTING_MODE:
         # Generate fake prayer times for testing
@@ -309,6 +337,7 @@ async def today_prayer_times(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
+# Update the prayer_callback function
 async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -317,6 +346,9 @@ async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"✅ {prayer} prayer marked as completed. May Allah accept your prayers!"
     )
+
+    # Delete previous reminders for this prayer
+    await delete_previous_reminders(context, prayer)
 
 
 def main():
