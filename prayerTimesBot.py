@@ -42,33 +42,7 @@ PRAYER_EMOJIS = {
     "Isha": "🌙",
 }
 
-
-# Add this new function to delete previous reminders
-async def delete_previous_reminders(context: ContextTypes.DEFAULT_TYPE, prayer: str):
-    chat_id = CHAT_ID
-    now = datetime.now(pytz.timezone("Asia/Amman"))
-    two_hours_ago = now - timedelta(hours=2)
-
-    async def delete_message(message_id):
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception as e:
-            logger.error(f"Failed to delete message {message_id}: {str(e)}")
-
-    try:
-        async with context.application.bot._request.get_session() as session:
-            updates = await context.application.bot.get_updates(offset=-1, limit=100)
-            delete_tasks = []
-            for update in updates:
-                if update.message and update.message.date > two_hours_ago:
-                    if (
-                        update.message.text
-                        and f"{prayer} prayer is in" in update.message.text
-                    ):
-                        delete_tasks.append(delete_message(update.message.message_id))
-            await asyncio.gather(*delete_tasks)
-    except Exception as e:
-        logger.error(f"Error while deleting previous reminders: {str(e)}")
+PRAYER_MESSAGE_IDS = {}
 
 
 async def fetch_prayer_times(retries=0):
@@ -76,7 +50,7 @@ async def fetch_prayer_times(retries=0):
         # Generate fake prayer times for testing
         now = datetime.now(pytz.timezone("Asia/Amman"))
         fake_times = {
-            "Fajr": (now + timedelta(minutes=25)).strftime("%I:%M %p"),
+            "Fajr": (now + timedelta(minutes=6)).strftime("%I:%M %p"),
             "Sunrise": (now + timedelta(minutes=35)).strftime("%I:%M %p"),
             "Dhuhr": (now + timedelta(minutes=45)).strftime("%I:%M %p"),
             "Asr": (now + timedelta(minutes=55)).strftime("%I:%M %p"),
@@ -163,10 +137,16 @@ async def send_notification(
         reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        await context.bot.send_message(
+        message_obj = await context.bot.send_message(
             chat_id=CHAT_ID, text=message, reply_markup=reply_markup
         )
         logger.info(f"Sent notification: {message}")
+
+        # Store the message ID in PRAYER_MESSAGE_IDS
+        if prayer not in PRAYER_MESSAGE_IDS:
+            PRAYER_MESSAGE_IDS[prayer] = []
+        PRAYER_MESSAGE_IDS[prayer].append(message_obj.message_id)
+
     except Exception as e:
         logger.error(f"Failed to send notification: {str(e)}")
 
@@ -337,18 +317,33 @@ async def today_prayer_times(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
 
 
-# Update the prayer_callback function
 async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     prayer = query.data.split("_")[1]
+    current_message_id = (
+        query.message.message_id
+    )  # Get the message ID of the current message (the one with the button)
+
+    # Delete past notifications for this prayer, except for the current message
+    if prayer in PRAYER_MESSAGE_IDS:
+        for message_id in PRAYER_MESSAGE_IDS[prayer]:
+            if message_id != current_message_id:  # Skip the current message
+                try:
+                    await context.bot.delete_message(
+                        chat_id=CHAT_ID, message_id=message_id
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to delete message {message_id}: {str(e)}")
+
+        # Clear the list after deleting messages
+        del PRAYER_MESSAGE_IDS[prayer]
+
+    # Edit the current message to indicate that the prayer was marked as prayed
     await query.edit_message_text(
         f"✅ {prayer} prayer marked as completed. May Allah accept your prayers!"
     )
-
-    # Delete previous reminders for this prayer
-    await delete_previous_reminders(context, prayer)
 
 
 def main():
