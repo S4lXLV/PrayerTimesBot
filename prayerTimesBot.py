@@ -118,6 +118,15 @@ async def send_notification(
         if minutes_before > 0:
             message = f"☀️ Sunrise reminder: The sun will rise in {minutes_before} minutes (at {time_str})"
         else:
+            # Delete previous Sunrise messages
+            if "Sunrise" in PRAYER_MESSAGE_IDS:
+                for message_id in PRAYER_MESSAGE_IDS["Sunrise"]:
+                    try:
+                        await context.bot.delete_message(chat_id=CHAT_ID, message_id=message_id)
+                    except Exception as e:
+                        logger.error(f"Failed to delete Sunrise message {message_id}: {str(e)}")
+                PRAYER_MESSAGE_IDS["Sunrise"] = []  # Clear the list after deleting messages
+
             message = f"☀️ The sun is rising now ({time_str})"
     else:
         if minutes_before > 0:
