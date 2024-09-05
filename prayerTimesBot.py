@@ -305,13 +305,36 @@ async def remaining_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = (
             f"{emoji} Time remaining until {next_prayer}:\n\n{hours:02d}:{minutes:02d}"
         )
-        await update.message.reply_text(message)
+        
+        # Send the message and store the message object
+        bot_message = await update.message.reply_text(message)
+        
+        # Schedule deletion of both messages after 20 seconds
+        context.job_queue.run_once(
+            delete_messages,
+            20,
+            data={
+                'chat_id': update.effective_chat.id,
+                'message_ids': [update.message.message_id, bot_message.message_id]
+            }
+        )
     else:
         await update.message.reply_text(
             "Sorry, I couldn't fetch the prayer times. Please try again later."
         )
 
+async def delete_messages(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    try:
+        for message_id in job.data['message_ids']:
+            await context.bot.delete_message(
+                chat_id=job.data['chat_id'],
+                message_id=message_id
+            )
+    except Exception as e:
+        logger.error(f"Error deleting messages: {e}")
 
+        
 async def today_prayer_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prayer_times = await fetch_prayer_times()
     if prayer_times:
