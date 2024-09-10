@@ -10,7 +10,6 @@ from aiohttp import web
 import aiohttp
 import os
 import logging
-import psutil  # For resource monitoring
 from telegram.error import TimedOut, NetworkError, Conflict
 
 # Set up logging
@@ -26,6 +25,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 TOKEN = "7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg"
 # Replace with your actual chat ID
 CHAT_ID = "651307921"
+
 # Set this to True for testing, False for production
 TESTING_MODE = False
 
@@ -47,6 +47,7 @@ PRAYER_MESSAGE_IDS = {}
 
 async def fetch_prayer_times(retries=0):
     if TESTING_MODE:
+        # Generate fake prayer times for testing
         now = datetime.now(pytz.timezone("Asia/Amman"))
         fake_times = {
             "Fajr": (now + timedelta(minutes=6)).strftime("%I:%M %p"),
@@ -83,6 +84,7 @@ async def fetch_prayer_times(retries=0):
                         "Isha": columns[6].text.strip(),
                     }
 
+                    # Add AM/PM to the times
                     for prayer, time_str in times.items():
                         hour, minute = map(int, time_str.split(":"))
                         if prayer in ["Fajr", "Sunrise"]:
@@ -112,11 +114,11 @@ async def fetch_prayer_times(retries=0):
 async def send_notification(
     context: ContextTypes.DEFAULT_TYPE, prayer: str, time_str: str, minutes_before: int
 ):
-    message = ""
     if prayer == "Sunrise":
         if minutes_before > 0:
             message = f"☀️ Sunrise reminder: The sun will rise in {minutes_before} minutes (at {time_str})"
         else:
+            # Delete previous Sunrise messages
             if "Sunrise" in PRAYER_MESSAGE_IDS:
                 for message_id in PRAYER_MESSAGE_IDS["Sunrise"]:
                     try:
@@ -124,6 +126,7 @@ async def send_notification(
                     except Exception as e:
                         logger.error(f"Failed to delete Sunrise message {message_id}: {str(e)}")
                 PRAYER_MESSAGE_IDS["Sunrise"] = []  # Clear the list after deleting messages
+
             message = f"☀️ The sun is rising now ({time_str})"
     else:
         if minutes_before > 0:
@@ -148,6 +151,7 @@ async def send_notification(
         )
         logger.info(f"Sent notification: {message}")
 
+        # Store the message ID in PRAYER_MESSAGE_IDS
         if prayer not in PRAYER_MESSAGE_IDS:
             PRAYER_MESSAGE_IDS[prayer] = []
         PRAYER_MESSAGE_IDS[prayer].append(message_obj.message_id)
@@ -156,7 +160,17 @@ async def send_notification(
         logger.error(f"Failed to send notification: {str(e)}")
 
 
+def remove_existing_jobs(job_queue):
+    current_jobs = job_queue.jobs()
+    for job in current_jobs:
+        if job.name and job.name.startswith("prayer_notification_"):
+            job.schedule_removal()
+    logger.info("Removed existing prayer notification jobs")
+
+
 async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_times):
+    remove_existing_jobs(context.job_queue)
+
     now = datetime.now(pytz.timezone("Asia/Amman"))
     for prayer, time_str in prayer_times.items():
         prayer_time = datetime.strptime(
@@ -164,12 +178,15 @@ async def schedule_notifications(context: ContextTypes.DEFAULT_TYPE, prayer_time
         )
         prayer_time = pytz.timezone("Asia/Amman").localize(prayer_time)
 
+        # Schedule notifications at 20, 10, 5 minutes before, and at prayer time
         for minutes in [20, 10, 5, 0]:
             notify_time = prayer_time - timedelta(minutes=minutes)
             if notify_time > now:
                 context.job_queue.run_once(
-                    lambda ctx, prayer=prayer, time_str=time_str, mins=minutes:
-                    send_notification(ctx, prayer, time_str, mins),
+                    lambda ctx,
+                    prayer=prayer,
+                    time_str=time_str,
+                    mins=minutes: send_notification(ctx, prayer, time_str, mins),
                     when=notify_time,
                     name=f"prayer_notification_{prayer}_{minutes}",
                 )
@@ -191,26 +208,23 @@ async def send_daily_update(context: ContextTypes.DEFAULT_TYPE):
         logger.error("Failed to fetch prayer times")
 
 
-# Add more robust error handling
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Exception while handling an update: {context.error}")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_message = (
+        "🕌 Welcome to the Prayer Times Bot! 🕌\n\n"
+        "I'll send you daily updates and reminders for prayer times.\n"
+        "Use /today to see today's prayer times.\n"
+        "Use /remaining to check the time until the next prayer."
+    )
+    await update.message.reply_text(welcome_message)
+    await send_daily_update(context)  # Send update immediately for testing
 
-    try:
-        raise context.error
-    except Conflict:
-        logger.warning("Conflict detected. Waiting before retrying...")
-        await asyncio.sleep(30)
-    except TimedOut:
-        logger.warning(f"Request timed out. Retrying in 10 seconds...")
-        await asyncio.sleep(10)
-    except NetworkError:
-        logger.warning(f"Network error. Retrying in 15 seconds...")
-        await asyncio.sleep(15)
-    except Exception as e:
-        logger.error(f"Unhandled error: {e}")
+
+async def handle(request):
+    return web.Response(text="Your bot is running!")
 
 
 async def keep_alive():
+    """Keeps the bot alive by periodically sending a request to Render."""
     while True:
         try:
             hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
@@ -218,30 +232,31 @@ async def keep_alive():
                 logger.warning(
                     "RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request."
                 )
-                await asyncio.sleep(300)
+                await asyncio.sleep(540)  # Sleep for 9 minutes
                 continue
 
+            # Use aiohttp for asynchronous requests
             async with aiohttp.ClientSession() as session:
+                # Send a GET request to your Render app's URL
                 async with session.get(f"https://{hostname}") as response:
-                    logger.info(f"Keep-alive request sent. Status: {response.status}")
+                    if response.status == 200:
+                        logger.info(
+                            f"Keep-alive request successful. Status: {response.status}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Keep-alive request returned unexpected status: {response.status}"
+                        )
         except Exception as e:
             logger.error(f"Error in keep-alive request: {str(e)}")
-        await asyncio.sleep(300)  # Ping every 5 minutes
 
-
-# Monitor system resource usage
-async def monitor_resources():
-    while True:
-        process = psutil.Process(os.getpid())
-        mem_info = process.memory_info()
-        cpu_percent = psutil.cpu_percent(interval=1)
-        logger.info(f"Memory usage: {mem_info.rss / (1024 ** 2):.2f} MB, CPU usage: {cpu_percent}%")
-        await asyncio.sleep(600)  # Log resource usage every 10 minutes
-
+        # Sleep for 9 minutes before sending the next request
+        await asyncio.sleep(340)
 
 async def web_server():
+    """Starts a simple web server for handling keep-alive requests."""
     app = web.Application()
-    app.router.add_get("/", lambda request: web.Response(text="Bot is running!"))
+    app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 8080))
@@ -249,26 +264,157 @@ async def web_server():
     await site.start()
     logger.info(f"Web server started on port {port}")
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles Telegram API errors."""
+    logger.error(f"Exception while handling an update: {context.error}")
+
+    # Implement retry logic for specific error types
+    if isinstance(context.error, Conflict):
+        logger.warning("Conflict detected. Waiting before retrying...")
+        await asyncio.sleep(30)  # Wait for 30 seconds before retrying
+    elif isinstance(context.error, (TimedOut, NetworkError)):
+        logger.warning(f"Network error: {context.error}. Retrying in 10 seconds...")
+        await asyncio.sleep(10)  # Wait for 10 seconds before retrying
+
+async def get_next_prayer(prayer_times):
+    now = datetime.now(pytz.timezone("Asia/Amman"))
+    today = now.date()
+    prayer_datetimes = {}
+
+    for prayer, time_str in prayer_times.items():
+        prayer_time = datetime.strptime(f"{today} {time_str}", "%Y-%m-%d %I:%M %p")
+        prayer_time = pytz.timezone("Asia/Amman").localize(prayer_time)
+        prayer_datetimes[prayer] = prayer_time
+
+    next_prayer = None
+    for prayer, prayer_time in prayer_datetimes.items():
+        if prayer_time > now:
+            next_prayer = (prayer, prayer_time)
+            break
+
+    if next_prayer is None:
+        # If no next prayer found today, get the first prayer of tomorrow
+        tomorrow = today + timedelta(days=1)
+        next_prayer = (
+            "Fajr",
+            pytz.timezone("Asia/Amman").localize(datetime.combine(tomorrow, time.min)),
+        )
+
+    return next_prayer
+
+
+async def remaining_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prayer_times = await fetch_prayer_times()
+    if prayer_times:
+        next_prayer, next_prayer_time = await get_next_prayer(prayer_times)
+        now = datetime.now(pytz.timezone("Asia/Amman"))
+        time_remaining = next_prayer_time - now
+
+        hours, remainder = divmod(time_remaining.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+
+        emoji = PRAYER_EMOJIS.get(next_prayer, "🕰")
+        message = (
+            f"{emoji} Time remaining until {next_prayer}:\n\n{hours:02d}:{minutes:02d}"
+        )
+        
+        # Send the message and store the message object
+        bot_message = await update.message.reply_text(message)
+        
+        # Schedule deletion of both messages after 20 seconds
+        context.job_queue.run_once(
+            delete_messages,
+            20,
+            data={
+                'chat_id': update.effective_chat.id,
+                'message_ids': [update.message.message_id, bot_message.message_id]
+            }
+        )
+    else:
+        await update.message.reply_text(
+            "Sorry, I couldn't fetch the prayer times. Please try again later."
+        )
+
+async def delete_messages(context: ContextTypes.DEFAULT_TYPE):
+    job = context.job
+    try:
+        for message_id in job.data['message_ids']:
+            await context.bot.delete_message(
+                chat_id=job.data['chat_id'],
+                message_id=message_id
+            )
+    except Exception as e:
+        logger.error(f"Error deleting messages: {e}")
+
+        
+async def today_prayer_times(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prayer_times = await fetch_prayer_times()
+    if prayer_times:
+        message = "📅 Prayer times for today:\n\n"
+        for prayer, time in prayer_times.items():
+            emoji = PRAYER_EMOJIS.get(prayer, "🕰")
+            message += f"{emoji} {prayer}: {time}\n"
+        await update.message.reply_text(message)
+    else:
+        await update.message.reply_text(
+            "Sorry, I couldn't fetch the prayer times. Please try again later."
+        )
+
+
+async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    prayer = query.data.split("_")[1]
+    current_message_id = (
+        query.message.message_id
+    )  # Get the message ID of the current message (the one with the button)
+
+    # Delete past notifications for this prayer, except for the current message
+    if prayer in PRAYER_MESSAGE_IDS:
+        for message_id in PRAYER_MESSAGE_IDS[prayer]:
+            if message_id != current_message_id:  # Skip the current message
+                try:
+                    await context.bot.delete_message(
+                        chat_id=CHAT_ID, message_id=message_id
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to delete message {message_id}: {str(e)}")
+
+        # Clear the list after deleting messages
+        del PRAYER_MESSAGE_IDS[prayer]
+
+    # Edit the current message to indicate that the prayer was marked as prayed
+    await query.edit_message_text(
+        f"✅ {prayer} prayer marked as completed. May Allah accept your prayers!"
+    )
+
 
 def main():
     application = Application.builder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler("start", send_daily_update))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("remaining", remaining_time))
+    application.add_handler(CommandHandler("today", today_prayer_times))
+    application.add_handler(CallbackQueryHandler(prayer_callback, pattern="^prayed_"))
     application.add_error_handler(error_handler)
 
     amman_tz = pytz.timezone("Asia/Amman")
 
+    # Schedule daily update at 4 AM
     application.job_queue.run_daily(
         send_daily_update,
         time=time(hour=4, minute=0, tzinfo=amman_tz),
         name="daily_update",
     )
 
-    loop = asyncio.get_event_loop()
+    # Start the web server and keep-alive mechanism
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.create_task(web_server())
     loop.create_task(keep_alive())
-    loop.create_task(monitor_resources())  # Add resource monitoring
 
+    # Start the bot with a higher timeout
     application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
 
 
