@@ -4,3 +4,5 @@ aiohttp
 requests
 beautifulsoup4
 pytz
+tenacity
+psutil
