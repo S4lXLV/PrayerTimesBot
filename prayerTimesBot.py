@@ -10,13 +10,26 @@ from aiohttp import web
 import aiohttp
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 from telegram.error import TimedOut, NetworkError, Conflict
+import signal
+import psutil
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 
 # Set up logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+def setup_logging():
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    handler = RotatingFileHandler(
+        "bot.log", maxBytes=10000000, backupCount=5
+    )
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
+
+logger = setup_logging()
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -44,7 +57,7 @@ PRAYER_EMOJIS = {
 
 PRAYER_MESSAGE_IDS = {}
 
-
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
 async def fetch_prayer_times(retries=0):
     if TESTING_MODE:
         # Generate fake prayer times for testing
@@ -262,6 +275,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     elif isinstance(context.error, (TimedOut, NetworkError)):
         logger.warning(f"Network error: {context.error}. Retrying in 10 seconds...")
         await asyncio.sleep(10)  # Wait for 10 seconds before retrying
+    else:
+        logger.error(f"Unexpected error: {context.error}")
+        await asyncio.sleep(60)  # Wait for 60 seconds before continuing
 
 
 async def get_next_prayer(prayer_times):
@@ -377,6 +393,34 @@ async def prayer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ {prayer} prayer marked as completed. May Allah accept your prayers!"
     )
 
+async def health_check(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        # Perform a simple operation to check if the bot is responsive
+        await context.bot.get_me()
+        logger.info("Health check passed")
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        # Implement a restart mechanism here
+        # For now, we'll just log the error and continue
+        pass
+
+async def check_memory_usage(context: ContextTypes.DEFAULT_TYPE):
+    process = psutil.Process()
+    memory_usage = process.memory_info().rss / 1024 / 1024  # in MB
+    if memory_usage > 500:  # Restart if using more than 500MB
+        logger.warning(f"High memory usage detected: {memory_usage}MB. Restarting...")
+        # Implement restart mechanism here
+        # For now, we'll just log the warning and continue
+        pass
+
+async def shutdown(signal, loop):
+    logger.info(f"Received exit signal {signal.name}...")
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop.stop()
+
+
 
 def main():
     application = Application.builder().token(TOKEN).build()
@@ -396,15 +440,37 @@ def main():
         name="daily_update",
     )
 
+    # Add health check and memory usage check
+    application.job_queue.run_repeating(health_check, interval=3600)  # Run every hour
+    application.job_queue.run_repeating(check_memory_usage, interval=3600)  # Run every hour
+
     # Start the web server and keep-alive mechanism
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.create_task(web_server())
     loop.create_task(keep_alive())
 
-    # Start the bot with a higher timeout
-    application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+    # Set up signal handlers for graceful shutdown
+    signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+    for s in signals:
+        loop.add_signal_handler(
+            s, lambda s=s: asyncio.create_task(shutdown(s, loop))
+        )
 
+    try:
+        # Start the bot with a higher timeout
+        application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        logger.error(f"Unexpected error in main loop: {e}")
+    finally:
+        logger.info("Bot is shutting down...")
+        loop.run_until_complete(application.stop())
+        loop.close()
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+        except Exception as e:
+            logger.error(f"Unexpected error in main function: {e}")
+            asyncio.sleep(60)  # Wait before restarting
