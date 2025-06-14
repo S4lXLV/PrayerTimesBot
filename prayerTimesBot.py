@@ -404,7 +404,7 @@ def main():
     # Schedule daily update at 4 AM
     application.job_queue.run_daily(
         send_daily_update,
-        time=time(hour=4, minute=0, tzinfo=amman_tz),
+        time=time(hour=3, minute=0, tzinfo=amman_tz),
         name="daily_update",
     )
 
