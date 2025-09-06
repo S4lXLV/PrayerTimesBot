@@ -21,10 +21,9 @@ logger = logging.getLogger(__name__)
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Replace with your actual bot token
-TOKEN = "7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg"
-# Replace with your actual chat ID
-CHAT_ID = "651307921"
+# Prefer environment variables in production. Fallbacks are for local/testing only.
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "651307921")
 
 # Set this to True for testing, False for production
 TESTING_MODE = False
@@ -225,35 +224,39 @@ async def handle(request):
 
 async def keep_alive():
     """Keeps the bot alive by periodically sending a request to Render."""
-    while True:
-        try:
-            hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
-            if not hostname:
-                logger.warning(
-                    "RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request."
-                )
-                await asyncio.sleep(540)  # Sleep for 9 minutes
-                continue
+    try:
+        while True:
+            try:
+                hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+                if not hostname:
+                    logger.warning(
+                        "RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request."
+                    )
+                    await asyncio.sleep(540)  # Sleep for 9 minutes
+                    continue
 
-            # Use aiohttp for asynchronous requests
-            async with aiohttp.ClientSession() as session:
-                # Send a GET request to your Render app's URL
-                async with session.get(f"https://{hostname}") as response:
-                    if response.status == 200:
-                        logger.info(
-                            f"Keep-alive request successful. Status: {response.status}"
-                        )
-                    else:
-                        logger.warning(
-                            f"Keep-alive request returned unexpected status: {response.status}"
-                        )
-        except Exception as e:
-            logger.error(f"Error in keep-alive request: {str(e)}")
+                # Use aiohttp for asynchronous requests
+                async with aiohttp.ClientSession() as session:
+                    # Send a GET request to your Render app's URL
+                    async with session.get(f"https://{hostname}") as response:
+                        if response.status == 200:
+                            logger.info(
+                                f"Keep-alive request successful. Status: {response.status}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Keep-alive request returned unexpected status: {response.status}"
+                            )
+            except Exception as e:
+                logger.error(f"Error in keep-alive request: {str(e)}")
 
-        # Sleep for 9 minutes before sending the next request
-        await asyncio.sleep(340)
+            # Sleep for ~6 minutes before sending the next request
+            await asyncio.sleep(340)
+    except asyncio.CancelledError:
+        logger.info("Keep-alive task cancelled.")
+        raise
 
-async def web_server():
+async def web_server(application: Application):
     """Starts a simple web server for handling keep-alive requests."""
     app = web.Application()
     app.router.add_get("/", handle)
@@ -262,7 +265,38 @@ async def web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    # Store runner & site for graceful shutdown
+    application.bot_data["web_runner"] = runner
+    application.bot_data["web_site"] = site
     logger.info(f"Web server started on port {port}")
+
+async def start_web_server_job(context: ContextTypes.DEFAULT_TYPE):
+    """JobQueue task to start the web server within the bot's event loop."""
+    application = context.application
+    await web_server(application)
+
+async def keep_alive_job(context: ContextTypes.DEFAULT_TYPE):
+    """JobQueue repeating task to ping the Render app and prevent idling."""
+    try:
+        hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+        if not hostname:
+            logger.warning(
+                "RENDER_EXTERNAL_HOSTNAME is not set. Skipping keep-alive request."
+            )
+            return
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://{hostname}") as response:
+                if response.status == 200:
+                    logger.info(
+                        f"Keep-alive request successful. Status: {response.status}"
+                    )
+                else:
+                    logger.warning(
+                        f"Keep-alive request returned unexpected status: {response.status}"
+                    )
+    except Exception as e:
+        logger.error(f"Error in keep-alive job: {str(e)}")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles Telegram API errors."""
@@ -408,14 +442,20 @@ def main():
         name="daily_update",
     )
 
-    # Start the web server and keep-alive mechanism
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(web_server())
-    loop.create_task(keep_alive())
+    # Start the web server and keep-alive mechanism inside the bot's event loop
+    # - Start web server once after the application starts
+    application.job_queue.run_once(start_web_server_job, when=0, name="start_web_server")
+    # - Run keep-alive every ~6 minutes
+    application.job_queue.run_repeating(
+        keep_alive_job, interval=340, first=10, name="keep_alive"
+    )
 
     # Start the bot with a higher timeout
-    application.run_polling(timeout=60, allowed_updates=Update.ALL_TYPES)
+    application.run_polling(
+        timeout=60,
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 schedule
-python-telegram-bot[job-queue]
+python-telegram-bot[job-queue]==21.6
 aiohttp
 requests
 beautifulsoup4
