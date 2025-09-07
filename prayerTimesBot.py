@@ -39,6 +39,11 @@ except ValueError:
     logger.error("TELEGRAM_CHAT_ID must be a numeric value (e.g., 651307921 or -1001234567890). Exiting.")
     raise SystemExit(1)
 
+# Webhook configuration
+WEBHOOK_PATH = os.getenv("TELEGRAM_WEBHOOK_PATH", "/webhook")
+if not WEBHOOK_PATH.startswith("/"):
+    WEBHOOK_PATH = "/" + WEBHOOK_PATH
+
 # Set this to True for testing, False for production
 TESTING_MODE = False
 
@@ -236,6 +241,30 @@ async def handle(request):
     return web.Response(text="Your bot is running!")
 
 
+async def telegram_webhook(request: web.Request):
+    """Handles incoming Telegram webhook updates and forwards them to PTB."""
+    application: Application = request.app.get("application")
+    if application is None:
+        return web.Response(status=500, text="Application not initialized")
+
+    # Optional: verify Telegram secret token header if provided via env
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+    if secret:
+        header_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if header_token != secret:
+            logger.warning("Invalid Telegram secret token header")
+            return web.Response(status=403, text="Forbidden")
+
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}")
+        return web.Response(status=500, text="Internal Server Error")
+
+    return web.Response(text="OK")
+
 async def keep_alive():
     """Keeps the bot alive by periodically sending a request to Render."""
     try:
@@ -274,6 +303,10 @@ async def web_server(application: Application):
     """Starts a simple web server for handling keep-alive requests."""
     app = web.Application()
     app.router.add_get("/", handle)
+    # Telegram webhook endpoint (static path; authenticate via secret header)
+    app.router.add_post(WEBHOOK_PATH, telegram_webhook)
+    # Store application reference for webhook handler
+    app["application"] = application
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 8080))
@@ -456,20 +489,54 @@ def main():
         name="daily_update",
     )
 
-    # Start the web server and keep-alive mechanism inside the bot's event loop
-    # - Start web server once after the application starts
-    application.job_queue.run_once(start_web_server_job, when=0, name="start_web_server")
-    # - Run keep-alive every ~6 minutes
+    # Schedule keep-alive every ~6 minutes
     application.job_queue.run_repeating(
         keep_alive_job, interval=340, first=10, name="keep_alive"
     )
 
-    # Start the bot with a higher timeout
-    application.run_polling(
-        timeout=60,
-        allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True,
-    )
+    # Run the application using webhooks
+    asyncio.run(run_webhook(application))
+
+
+async def run_webhook(application: Application):
+    """Initialize PTB Application, start aiohttp server and set Telegram webhook."""
+    # Start PTB internals (bot, job queue, etc.)
+    await application.initialize()
+
+    # Start our aiohttp web server with health and webhook endpoints
+    await web_server(application)
+
+    # Configure Telegram webhook to point to this service
+    hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    if not hostname:
+        logger.error(
+            "RENDER_EXTERNAL_HOSTNAME is not set. Cannot configure Telegram webhook."
+        )
+        raise SystemExit(1)
+
+    webhook_url = f"https://{hostname}{WEBHOOK_PATH}"
+    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+    try:
+        await application.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES,
+            secret_token=secret if secret else None,
+        )
+        logger.info(f"Webhook set to {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
+
+    # Start the application (starts the JobQueue scheduler)
+    await application.start()
+
+    # Keep running forever
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await application.stop()
+        await application.shutdown()
 
 
 if __name__ == "__main__":
