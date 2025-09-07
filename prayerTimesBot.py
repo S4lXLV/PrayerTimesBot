@@ -21,9 +21,23 @@ logger = logging.getLogger(__name__)
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Prefer environment variables in production. Fallbacks are for local/testing only.
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "7445923368:AAFH9UPTjo0k9kU_Bp9PeNnoTCl48y3VHeg")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "651307921")
+# Read from environment variables only. No fallbacks in production.
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+if not TOKEN:
+    logger.error("Environment variable TELEGRAM_BOT_TOKEN is not set. Exiting.")
+    raise SystemExit(1)
+if not CHAT_ID:
+    logger.error("Environment variable TELEGRAM_CHAT_ID is not set. Exiting.")
+    raise SystemExit(1)
+
+# Cast CHAT_ID to int (Telegram expects a numeric chat id, may be negative for groups)
+try:
+    CHAT_ID = int(CHAT_ID)
+except ValueError:
+    logger.error("TELEGRAM_CHAT_ID must be a numeric value (e.g., 651307921 or -1001234567890). Exiting.")
+    raise SystemExit(1)
 
 # Set this to True for testing, False for production
 TESTING_MODE = False
